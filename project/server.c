@@ -1,6 +1,6 @@
 #include "consts.h"
 #include "libtransport.h"
-#include "security.h"
+#include "s_security.h"
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,8 +39,8 @@ int main(int argc, char** argv) {
     recvfrom(sockfd, &buffer, sizeof(buffer), MSG_PEEK,
                                    (struct sockaddr*) &client_addr, &s);
 
-    init_sec(SERVER, NULL);
-    listen_loop(sockfd, &client_addr, SERVER, input_sec, output_sec);
+    s_init_sec(SERVER, NULL);
+    listen_loop(sockfd, &client_addr, SERVER, s_input_sec, s_output_sec);
 
     return 0;
 }

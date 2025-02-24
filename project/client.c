@@ -1,5 +1,5 @@
 #include "consts.h"
-#include "security.h"
+#include "c_security.h"
 #include "libtransport.h"
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -49,8 +49,8 @@ int main(int argc, char** argv) {
     int PORT = atoi(argv[2]);
     server_addr.sin_port = htons(PORT); // Big endian
 
-    init_sec(CLIENT, argv[1]);
-    listen_loop(sockfd, &server_addr, CLIENT, input_sec, output_sec);
+    c_init_sec(CLIENT, argv[1]);
+    listen_loop(sockfd, &server_addr, CLIENT, c_input_sec, c_output_sec);
 
     return 0;
 }

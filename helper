@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 # Define the project name
 NAME="ghcr.io/uclacs118/project2"
