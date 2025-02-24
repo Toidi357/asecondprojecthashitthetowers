@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
     recvfrom(sockfd, &buffer, sizeof(buffer), MSG_PEEK,
                                    (struct sockaddr*) &client_addr, &s);
 
-    s_init_sec(SERVER, NULL);
+    s_init_sec();
     listen_loop(sockfd, &client_addr, SERVER, s_input_sec, s_output_sec);
 
     return 0;

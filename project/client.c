@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     int PORT = atoi(argv[2]);
     server_addr.sin_port = htons(PORT); // Big endian
 
-    c_init_sec(CLIENT, argv[1]);
+    c_init_sec(argv[1]);
     listen_loop(sockfd, &server_addr, CLIENT, c_input_sec, c_output_sec);
 
     return 0;

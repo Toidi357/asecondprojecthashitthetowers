@@ -22,8 +22,7 @@ size_t C_CLI_HELLO_SIZE;
 uint8_t C_SER_HELLO[1024];
 size_t C_SER_HELLO_SIZE;
 
-
-void c_init_sec(int type, char *host)
+void c_init_sec(char *host)
 {
     memcpy(hostname, host, strlen(host)); // save hostname??
 
@@ -74,7 +73,7 @@ ssize_t c_input_sec(uint8_t *buf, size_t max_length)
         size_t data_size = C_CLI_HELLO_SIZE + C_SER_HELLO_SIZE;
         memcpy(data, C_CLI_HELLO, C_CLI_HELLO_SIZE);
         memcpy(data + C_CLI_HELLO_SIZE, C_SER_HELLO, C_SER_HELLO_SIZE);
-        
+
         // create MAC digest
         uint8_t digest[MAC_SIZE];
         hmac(digest, data, data_size);
@@ -96,7 +95,42 @@ ssize_t c_input_sec(uint8_t *buf, size_t max_length)
         return len;
     }
 
-    return input_io(buf, max_length);
+    if (CLIENT_STATE == 3)
+    {
+        size_t bytes_read = input_io(buf, 943);
+
+        if (bytes_read == 0)
+            return 0;
+
+        tlv *data = create_tlv(DATA);
+        tlv *iv = create_tlv(IV);
+        tlv *ciphertext = create_tlv(CIPHERTEXT);
+        tlv *mac = create_tlv(MAC);
+
+        // generate an IV
+        uint8_t temp[1024];
+        generate_nonce(temp, IV_SIZE);
+        add_val(iv, temp, IV_SIZE);
+
+        // generate ciphertext tlv
+        size_t ciphertext_size = encrypt_data(iv->val, temp, buf, bytes_read);
+        add_val(ciphertext, temp, ciphertext_size);
+
+        // generate MAC
+        uint8_t _[1024];
+        serialize_tlv(_, iv);
+        uint16_t lenn = serialize_tlv(_ + 18, ciphertext);
+        hmac(temp, _, lenn + 18); // size of IV TLV is always 18 bytes
+        add_val(mac, temp, MAC_SIZE);
+
+        // build and send out
+        add_tlv(data, iv);
+        add_tlv(data, ciphertext);
+        add_tlv(data, mac);
+        uint16_t len = serialize_tlv(buf, data);
+        free_tlv(data);
+        return len;
+    }
 }
 
 void c_output_sec(uint8_t *buf, size_t length)
@@ -113,7 +147,7 @@ void c_output_sec(uint8_t *buf, size_t length)
         tlv *ser_hello = deserialize_tlv(buf, length);
         if (ser_hello == NULL)
             return;
-        
+
         // verify certificate
         tlv *cert = get_tlv(ser_hello, CERTIFICATE);
         tlv *cert_dns = get_tlv(cert, DNS_NAME);
@@ -130,14 +164,16 @@ void c_output_sec(uint8_t *buf, size_t length)
         memcpy(signature_data + signature_data_size, buf, lenn);
         signature_data_size += lenn;
 
-        if (verify(cert_sig->val, cert_sig->length, signature_data, signature_data_size, ec_ca_public_key) != 1) {
+        if (verify(cert_sig->val, cert_sig->length, signature_data, signature_data_size, ec_ca_public_key) != 1)
+        {
             fprintf(stderr, "Bad Cert\n");
             exit(1);
         }
         // END of verify certificate
 
         // verify DNS hostname
-        if (strncmp((char *)hostname, (char *)(cert_dns->val), cert_dns->length) != 0) {
+        if (strncmp((char *)hostname, (char *)(cert_dns->val), cert_dns->length) != 0)
+        {
             fprintf(stderr, "Bad Hostname\n");
             exit(2);
         }
@@ -154,7 +190,7 @@ void c_output_sec(uint8_t *buf, size_t length)
         lenn = serialize_tlv(buf, nn);
         memcpy(signature_data + signature_data_size, buf, lenn);
         signature_data_size += lenn;
-        
+
         lenn = serialize_tlv(buf, cert);
         memcpy(signature_data + signature_data_size, buf, lenn);
         signature_data_size += lenn;
@@ -163,12 +199,12 @@ void c_output_sec(uint8_t *buf, size_t length)
         memcpy(signature_data + signature_data_size, buf, lenn);
         signature_data_size += lenn;
 
-        if (verify(sign->val, sign->length, signature_data, signature_data_size, ec_peer_public_key) != 1) {
+        if (verify(sign->val, sign->length, signature_data, signature_data_size, ec_peer_public_key) != 1)
+        {
             fprintf(stderr, "Bad Handshake Signature\n");
             exit(3);
         }
         // END of verify signature
-
 
         // perform key exchange
         load_peer_public_key(pub_key->val, pub_key->length);
@@ -179,7 +215,6 @@ void c_output_sec(uint8_t *buf, size_t length)
         memcpy(salt + C_CLI_HELLO_SIZE, C_SER_HELLO, C_SER_HELLO_SIZE);
         derive_keys(salt, salt_size);
 
-
         free_tlv(ser_hello);
         CLIENT_STATE = 2;
         return;
@@ -188,5 +223,34 @@ void c_output_sec(uint8_t *buf, size_t length)
     if (CLIENT_STATE == 2)
         return;
 
-    output_io(buf, length);
+    if (CLIENT_STATE == 3)
+    {
+        tlv *recvd = deserialize_tlv(buf, length);
+        if (recvd == NULL)
+            return;
+
+        tlv *iv = get_tlv(recvd, IV);
+        tlv *ciphertext = get_tlv(recvd, CIPHERTEXT);
+        tlv *mac = get_tlv(recvd, MAC);
+
+        uint8_t temp[1024];
+
+        // verify mac
+        uint8_t digest[MAC_SIZE];
+        serialize_tlv(temp, iv);
+        uint16_t lenn = serialize_tlv(temp + 18, ciphertext); // size of IV TLV is always 18 bytes
+        hmac(digest, temp, lenn + 18);
+        if (strncmp((char *)digest, (char *)(mac->val), MAC_SIZE) != 0)
+        {
+            fprintf(stderr, "Bad MAC\n");
+            exit(5);
+        }
+
+        // decrypt text
+        size_t bytes_recvd = decrypt_cipher(buf, ciphertext->val, ciphertext->length, iv->val);
+
+        free_tlv(recvd);
+
+        output_io(buf, bytes_recvd);
+    }
 }

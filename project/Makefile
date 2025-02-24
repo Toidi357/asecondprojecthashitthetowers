@@ -1,5 +1,5 @@
 CC=gcc
-CPPFLAGS=-Wall -Wextra
+CPPFLAGS=-Wall -Wextra -g
 LDFLAGS=
 LDLIBS=-ltransport -lsecurity -lcrypto
 
