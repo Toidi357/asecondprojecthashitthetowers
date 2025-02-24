@@ -12,14 +12,22 @@ int CLIENT_STATE = 0;
 State Table:
     0: init, send cli hello
     1: waiting for ser hello
+    2: keys generated, waiting to send finished message
+    3: good to go
 */
 
 uint8_t hostname[256];
-uint8_t init_nonce[NONCE_SIZE];
+uint8_t C_CLI_HELLO[1024];
+size_t C_CLI_HELLO_SIZE;
+uint8_t C_SER_HELLO[1024];
+size_t C_SER_HELLO_SIZE;
+
 
 void c_init_sec(int type, char *host)
 {
     memcpy(hostname, host, strlen(host)); // save hostname??
+
+    load_ca_public_key("ca_public_key.bin");
 
     generate_private_key();
     derive_public_key();
@@ -40,7 +48,6 @@ ssize_t c_input_sec(uint8_t *buf, size_t max_length)
         generate_nonce(nonce, NONCE_SIZE);
         add_val(nn, nonce, NONCE_SIZE);
         add_tlv(cli_hello, nn);
-        memcpy(init_nonce, nonce, NONCE_SIZE); // save nonce
 
         // do the generated public key
         tlv *pub_key = create_tlv(PUBLIC_KEY);
@@ -49,10 +56,43 @@ ssize_t c_input_sec(uint8_t *buf, size_t max_length)
 
         // serialize
         uint16_t len = serialize_tlv(buf, cli_hello);
+        memcpy(C_CLI_HELLO, buf, len); // save client hello
+        C_CLI_HELLO_SIZE = len;
         free_tlv(cli_hello);
 
         // update State
         CLIENT_STATE = 1;
+        return len;
+    }
+
+    if (CLIENT_STATE == 1) // waiting for server hello
+        return 0;
+
+    if (CLIENT_STATE == 2) // send finished message
+    {
+        uint8_t data[1024];
+        size_t data_size = C_CLI_HELLO_SIZE + C_SER_HELLO_SIZE;
+        memcpy(data, C_CLI_HELLO, C_CLI_HELLO_SIZE);
+        memcpy(data + C_CLI_HELLO_SIZE, C_SER_HELLO, C_SER_HELLO_SIZE);
+        
+        // create MAC digest
+        uint8_t digest[MAC_SIZE];
+        hmac(digest, data, data_size);
+
+        // build Transcript TLV
+        tlv *transcript = create_tlv(TRANSCRIPT);
+        add_val(transcript, digest, MAC_SIZE);
+
+        // build Finished TLV
+        tlv *finished = create_tlv(FINISHED);
+        add_tlv(finished, transcript);
+
+        // serialize
+        uint16_t len = serialize_tlv(buf, finished);
+        free_tlv(finished);
+
+        // update State
+        CLIENT_STATE = 3;
         return len;
     }
 
@@ -63,6 +103,90 @@ void c_output_sec(uint8_t *buf, size_t length)
 {
     if (CLIENT_STATE == 0)
         return; // need to send client hello first
+
+    if (CLIENT_STATE == 1) // parse the server hello
+    {
+        // save the entire server hello to use for key exchange
+        memcpy(C_SER_HELLO, buf, length);
+        C_SER_HELLO_SIZE = length;
+
+        tlv *ser_hello = deserialize_tlv(buf, length);
+        if (ser_hello == NULL)
+            return;
+        
+        // verify certificate
+        tlv *cert = get_tlv(ser_hello, CERTIFICATE);
+        tlv *cert_dns = get_tlv(cert, DNS_NAME);
+        tlv *cert_pub_key = get_tlv(cert, PUBLIC_KEY);
+        load_peer_public_key(cert_pub_key->val, cert_pub_key->length);
+        tlv *cert_sig = get_tlv(cert, SIGNATURE);
+
+        uint8_t signature_data[1024];
+        size_t signature_data_size = 0;
+        uint16_t lenn = serialize_tlv(buf, cert_dns);
+        memcpy(signature_data, buf, lenn);
+        signature_data_size += lenn;
+        lenn = serialize_tlv(buf, cert_pub_key);
+        memcpy(signature_data + signature_data_size, buf, lenn);
+        signature_data_size += lenn;
+
+        if (verify(cert_sig->val, cert_sig->length, signature_data, signature_data_size, ec_ca_public_key) != 1) {
+            fprintf(stderr, "Bad Cert\n");
+            exit(1);
+        }
+        // END of verify certificate
+
+        // verify DNS hostname
+        if (strncmp((char *)hostname, (char *)(cert_dns->val), cert_dns->length) != 0) {
+            fprintf(stderr, "Bad Hostname\n");
+            exit(2);
+        }
+
+        // verify signature
+        tlv *sign = get_tlv(ser_hello, HANDSHAKE_SIGNATURE);
+        tlv *nn = get_tlv(ser_hello, NONCE);
+        tlv *pub_key = get_tlv(ser_hello, PUBLIC_KEY);
+
+        signature_data_size = 0;
+        memcpy(signature_data, C_CLI_HELLO, C_CLI_HELLO_SIZE);
+        signature_data_size += C_CLI_HELLO_SIZE;
+
+        lenn = serialize_tlv(buf, nn);
+        memcpy(signature_data + signature_data_size, buf, lenn);
+        signature_data_size += lenn;
+        
+        lenn = serialize_tlv(buf, cert);
+        memcpy(signature_data + signature_data_size, buf, lenn);
+        signature_data_size += lenn;
+
+        lenn = serialize_tlv(buf, pub_key);
+        memcpy(signature_data + signature_data_size, buf, lenn);
+        signature_data_size += lenn;
+
+        if (verify(sign->val, sign->length, signature_data, signature_data_size, ec_peer_public_key) != 1) {
+            fprintf(stderr, "Bad Handshake Signature\n");
+            exit(3);
+        }
+        // END of verify signature
+
+
+        // perform key exchange
+        load_peer_public_key(pub_key->val, pub_key->length);
+        derive_secret();
+        uint8_t salt[1024];
+        size_t salt_size = C_CLI_HELLO_SIZE + C_SER_HELLO_SIZE;
+        memcpy(salt, C_CLI_HELLO, C_CLI_HELLO_SIZE);
+        memcpy(salt + C_CLI_HELLO_SIZE, C_SER_HELLO, C_SER_HELLO_SIZE);
+        derive_keys(salt, salt_size);
+
+
+        free_tlv(ser_hello);
+        CLIENT_STATE = 2;
+        return;
+    }
+
+    if (CLIENT_STATE == 2)
+        return;
 
     output_io(buf, length);
 }
